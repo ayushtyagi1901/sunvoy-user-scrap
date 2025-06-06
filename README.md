@@ -44,8 +44,20 @@ The script generates a `users.json` file containing:
 
 ## 🎥 Demo Video
 
-[Link to Loom video demo will be added here]
+https://www.loom.com/share/1a510c1e03f34ce39b3e7a03767228d0?sid=39dc25cf-1126-494c-afe2-20c67c052a7b
 
 ## ⏱️ Time Spent
 
-[To be filled]
+1. Ideation & Planning
+Understood challenge scope, session flow, endpoints, and planned modular structure
+Time: 1 hour
+2. Code Implementation
+Login with nonce, cookie/session handling, user & token scraping, data saving
+Time: 3 hours
+3. Debugging & Testing
+Handled failures, verified scraping accuracy, ensured data integrity
+Time: 2 hours
+
+Total Time Taken Approx. 6 Hours
+
+Used GitHub Copilot only for redundant code completion, documentation, and code comments.
