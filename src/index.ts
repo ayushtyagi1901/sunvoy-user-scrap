@@ -174,12 +174,6 @@ async function main() {
         throw new Error('Nonce not found on login page');
       }
       console.log('Nonce extracted:', nonce);
-      
-      // Debug login form
-      const formMatch = loginPageResp.data.match(/<form[\s\S]*?<\/form>/i);
-      if (formMatch) {
-        console.log('Login form HTML:', formMatch[0]);
-      }
 
       // Login
       console.log('Attempting to login...');
