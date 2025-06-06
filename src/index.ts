@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { CookieJar } from 'tough-cookie';
+import { CookieJar, Cookie } from 'tough-cookie';
 import { wrapper } from 'axios-cookiejar-support';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -8,10 +8,10 @@ import * as dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 
-// Load environment variables
+// Load env vars
 dotenv.config();
 
-// ESM-compatible __dirname
+// ESM __dirname fix
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -25,7 +25,6 @@ interface User {
 }
 
 interface CurrentUser {
-  id: string;
   accessToken: string;
   openId: string;
   userId: string;
@@ -39,16 +38,17 @@ interface ApiResponse {
   currentUser: CurrentUser;
 }
 
-// Constants
+// Config
 const BASE_URL = 'https://challenge.sunvoy.com';
 const CREDENTIALS = {
   email: 'demo@example.org',
   password: 'test'
 };
 const MAX_RETRIES = 3;
-const RETRY_DELAY = 1000; // 1 second
+const RETRY_DELAY = 1000; // 1s
+const COOKIES_FILE = path.join(__dirname, '../.cookies.json');
 
-// Setup axios with cookie support
+// Setup axios with cookie jar
 const jar = new CookieJar();
 const client = wrapper(axios.create({
   withCredentials: true,
@@ -60,10 +60,9 @@ const client = wrapper(axios.create({
 }));
 (client as any).defaults.jar = jar;
 
-// Helper function to delay execution
+// Utils
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Helper function to save data to JSON file
 const saveToJson = (data: ApiResponse): void => {
   try {
     const outputDir = path.join(__dirname, '../output');
@@ -73,14 +72,48 @@ const saveToJson = (data: ApiResponse): void => {
 
     const outputPath = path.join(outputDir, 'users.json');
     fs.writeFileSync(outputPath, JSON.stringify(data, null, 2));
-    console.log(`✅ Data saved to ${outputPath}`);
+    console.log(`Data saved to ${outputPath}`);
   } catch (error) {
-    console.error('❌ Error saving to JSON:', error);
+    console.error('Error saving to JSON:', error);
     throw error;
   }
 };
 
-// Helper function to retry failed requests
+const saveCookies = async (): Promise<void> => {
+  try {
+    const cookies = await jar.getCookies(BASE_URL);
+    const cookieData = cookies.map(c => ({
+      key: c.key,
+      value: c.value,
+      domain: c.domain,
+      path: c.path,
+      expires: c.expires
+    }));
+    fs.writeFileSync(COOKIES_FILE, JSON.stringify(cookieData, null, 2));
+    console.log('Cookies saved to .cookies.json');
+  } catch (error) {
+    console.error('Error saving cookies:', error);
+  }
+};
+
+const loadCookies = async (): Promise<boolean> => {
+  try {
+    if (!fs.existsSync(COOKIES_FILE)) {
+      return false;
+    }
+    const cookieData = JSON.parse(fs.readFileSync(COOKIES_FILE, 'utf-8'));
+    for (const cookie of cookieData) {
+      const cookieStr = `${cookie.key}=${cookie.value}`;
+      await jar.setCookie(cookieStr, BASE_URL);
+    }
+    console.log('Cookies loaded from .cookies.json');
+    return true;
+  } catch (error) {
+    console.error('Error loading cookies:', error);
+    return false;
+  }
+};
+
 async function retryRequest<T>(
   requestFn: () => Promise<T>,
   maxRetries: number = MAX_RETRIES
@@ -92,7 +125,7 @@ async function retryRequest<T>(
       return await requestFn();
     } catch (error) {
       lastError = error as Error;
-      console.log(`⚠️ Attempt ${i + 1} failed: ${lastError.message}`);
+      console.log(`Attempt ${i + 1} failed: ${lastError.message}`);
       if (i < maxRetries - 1) {
         await delay(RETRY_DELAY * (i + 1));
       }
@@ -102,78 +135,141 @@ async function retryRequest<T>(
   throw lastError;
 }
 
-// Helper to extract nonce from HTML
 function extractNonce(html: string): string | null {
   const match = html.match(/name=["']nonce["']\s+value=["']([^"']+)["']/i);
   return match ? match[1] : null;
 }
 
-// Main function to handle authentication and data fetching
+// Main
 async function main() {
+  let loginSuccess = false;
+  let usersFetched = false;
+  let currentUserFetched = false;
+  let tokensFetched = false;
+  let jsonCreated = false;
+  let loginRedirectLocation = '';
+
   try {
-    // Get login page for nonce
-    console.log('🔑 Getting login page...');
-    const loginPageResp = await client.get(`${BASE_URL}/login`, { 
-      headers: { Accept: 'text/html' } 
-    });
-    
-    const nonce = extractNonce(loginPageResp.data);
-    if (!nonce) {
-      throw new Error('Could not find nonce on login page');
+    // Try loading saved cookies
+    const cookiesLoaded = await loadCookies();
+    if (cookiesLoaded) {
+      try {
+        const testResponse = await client.get(`${BASE_URL}/list`);
+        if (testResponse.status === 200) {
+          loginSuccess = true;
+          console.log('Reused existing session');
+        }
+      } catch (error) {
+        console.log('Session expired, logging in again...');
+      }
     }
 
-    // Login with credentials
-    console.log('🔐 Logging in...');
-    const params = new URLSearchParams();
-    params.append('username', CREDENTIALS.email);
-    params.append('password', CREDENTIALS.password);
-    params.append('nonce', nonce);
+    if (!loginSuccess) {
+      // Get login page for nonce
+      console.log('Fetching login page for nonce...');
+      const loginPageResp = await client.get(`${BASE_URL}/login`, { headers: { Accept: 'text/html' } });
+      const nonce = extractNonce(loginPageResp.data);
+      if (!nonce) {
+        console.error('First 500 chars of login page HTML:', loginPageResp.data.slice(0, 500));
+        throw new Error('Nonce not found on login page');
+      }
+      console.log('Nonce extracted:', nonce);
+      
+      // Debug login form
+      const formMatch = loginPageResp.data.match(/<form[\s\S]*?<\/form>/i);
+      if (formMatch) {
+        console.log('Login form HTML:', formMatch[0]);
+      }
 
-    const loginResponse = await retryRequest(async () => {
-      const response = await client.post(`${BASE_URL}/login`, params.toString(), {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'application/json, text/html, */*',
-          'Referer': `${BASE_URL}/login`,
-          'Origin': BASE_URL
-        },
-        maxRedirects: 0,
-        validateStatus: (status) => status === 302 || status === 200
+      // Login
+      console.log('Attempting to login...');
+      const params = new URLSearchParams();
+      params.append('username', CREDENTIALS.email);
+      params.append('password', CREDENTIALS.password);
+      params.append('nonce', nonce);
+
+      const loginResponse = await retryRequest(async () => {
+        const response = await client.post(`${BASE_URL}/login`, params.toString(), {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json, text/html, */*',
+            'Referer': `${BASE_URL}/login`,
+            'Origin': BASE_URL
+          },
+          maxRedirects: 0,
+          validateStatus: (status) => status === 302 || status === 200
+        });
+
+        if (response.status === 302 && response.headers['location']) {
+          loginRedirectLocation = response.headers['location'];
+        }
+        if (response.status !== 302 && response.status !== 200) {
+          throw new Error('Login failed');
+        }
+        return response;
       });
 
-      if (response.status !== 302 && response.status !== 200) {
-        throw new Error('Login failed');
+      loginSuccess = true;
+      console.log('Login successful');
+      console.log('Login redirect location:', loginRedirectLocation);
+      
+      // Debug cookies
+      const cookies = await jar.getCookies(BASE_URL);
+      console.log('Cookies after login:', cookies.map(c => `${c.key}=${c.value}`).join('; '));
+      
+      await saveCookies();
+    }
+
+    // Get users
+    console.log('Fetching users...');
+    let users: any[] = [];
+    let usersFetchedEndpoint = '';
+    
+    try {
+      const usersResponse = await retryRequest(async () => {
+        const response = await client.post(`${BASE_URL}/api/users`);
+        if (!Array.isArray(response.data)) {
+          throw new Error('Invalid users data format');
+        }
+        return response;
+      });
+      users = usersResponse.data.slice(0, 10);
+      usersFetchedEndpoint = '/api/users (POST)';
+    } catch (err: any) {
+      console.log('POST /api/users failed:', err.message);
+    }
+
+    if (!users.length) {
+      // Debug: try getting /list page
+      try {
+        const listResp = await client.get(`${BASE_URL}/list`);
+        console.log('First 2000 chars of /list HTML:', listResp.data.slice(0, 2000));
+        
+        // Look for JS file
+        const jsMatch = listResp.data.match(/<script src="(\/js\/list\.[^"]+)"/);
+        if (jsMatch) {
+          const jsPath = jsMatch[1];
+          const jsResp = await client.get(`${BASE_URL}${jsPath}`);
+          console.log(`First 2000 chars of ${jsPath}:`, jsResp.data.slice(0, 2000));
+        }
+      } catch (e) {
+        console.log('Error fetching /list or JS:', (e as Error).message);
       }
-      return response;
-    });
+      throw new Error('Could not fetch users from any known endpoint');
+    }
+    usersFetched = true;
+    console.log(`Fetched ${users.length} users from ${usersFetchedEndpoint}`);
 
-    console.log('✅ Login successful');
-
-    // Fetch users
-    console.log('👥 Fetching users...');
-    const usersResponse = await retryRequest(async () => {
-      const response = await client.post(`${BASE_URL}/api/users`);
-      if (!Array.isArray(response.data)) {
-        throw new Error('Invalid users data format');
-      }
-      return response;
-    });
-
-    const users = usersResponse.data.slice(0, 10);
-    console.log(`✅ Fetched ${users.length} users`);
-
-    // Fetch current user
-    console.log('👤 Fetching current user info...');
+    // Get current user
+    console.log('Fetching current user...');
     const currentUserResponse = await retryRequest(async () => {
       const response = await client.get(`${BASE_URL}/settings/tokens`);
       if (!response.data) {
-        throw new Error('Invalid current user data format');
+        throw new Error('Empty token settings response');
       }
       
-      // Parse the HTML to extract user data
       const $ = cheerio.load(response.data);
       const userData: CurrentUser = {
-        id: String($('#userId').val() || ''),
         accessToken: String($('#access_token').val() || ''),
         openId: String($('#openId').val() || ''),
         userId: String($('#userId').val() || ''),
@@ -183,22 +279,61 @@ async function main() {
       };
       return { data: userData };
     });
+    const currentUser = currentUserResponse.data;
+    currentUserFetched = true;
+    console.log('Current user fetched successfully');
 
-    console.log('✅ Current user info fetched');
+    // Get tokens
+    console.log('Fetching token settings...');
+    const tokenResponse = await retryRequest(async () => {
+      const response = await client.get(`${BASE_URL}/settings/tokens`);
+      if (!response.data) {
+        throw new Error('Empty token settings response');
+      }
+      
+      const $ = cheerio.load(response.data);
+      // Add token data to currentUser
+      currentUser.accessToken = String($('#access_token').val() || '');
+      currentUser.openId = String($('#openId').val() || '');
+      currentUser.userId = String($('#userId').val() || '');
+      currentUser.apiUser = String($('#apiuser').val() || '');
+      currentUser.operateId = String($('#operateId').val() || '');
+      currentUser.language = String($('#language').val() || '');
+      
+      return { data: currentUser };
+    });
+    tokensFetched = true;
+    console.log('Tokens fetched and saved');
 
-    // Save everything to JSON
+    // Save everything
     const data: ApiResponse = {
       users,
-      currentUser: currentUserResponse.data
+      currentUser
     };
 
     saveToJson(data);
+    jsonCreated = true;
+
+    // Print summary
+    console.log('\n=== Execution Summary ===');
+    console.log(`Login: ${loginSuccess ? 'Success' : 'Fail'}`);
+    console.log(`User List: ${usersFetched ? 'Fetched' : 'Failed'}`);
+    console.log(`Current User: ${currentUserFetched ? 'Fetched' : 'Failed'}`);
+    console.log(`Token Settings: ${tokensFetched ? 'Fetched' : 'Failed'}`);
+    console.log(`users.json: ${jsonCreated ? 'Created successfully' : 'Failed'} with ${users.length + 1} entries`);
 
   } catch (error) {
-    console.error('\n❌ Error:', error instanceof Error ? error.message : 'Unknown error occurred');
+    console.error('\n=== Error Summary ===');
+    console.error('Error:', error instanceof Error ? error.message : 'Unknown error occurred');
+    console.log('\n=== Execution Summary ===');
+    console.log(`Login: ${loginSuccess ? 'Success' : 'Fail'}`);
+    console.log(`User List: ${usersFetched ? 'Fetched' : 'Failed'}`);
+    console.log(`Current User: ${currentUserFetched ? 'Fetched' : 'Failed'}`);
+    console.log(`Token Settings: ${tokensFetched ? 'Fetched' : 'Failed'}`);
+    console.log(`users.json: ${jsonCreated ? 'Created successfully' : 'Failed'}`);
     process.exit(1);
   }
 }
 
-// Run the script
+// Run it
 main(); 

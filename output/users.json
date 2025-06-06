@@ -56,8 +56,7 @@
     }
   ],
   "currentUser": {
-    "id": "88619348-dbd9-4334-9290-241a7f17dd31",
-    "accessToken": "5eb36e976795a34634ea9d2e07c5163ccf82eded1eab2aeea196257aed2f3145",
+    "accessToken": "edc4de52109a8253496b8f25afacfe8c2b0ceb77a53dd2b22ce7065611c22e86",
     "openId": "openid456",
     "userId": "88619348-dbd9-4334-9290-241a7f17dd31",
     "apiUser": "demo@example.org",
