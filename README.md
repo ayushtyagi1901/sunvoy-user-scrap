@@ -39,7 +39,7 @@ The script will:
 ## 📝 Output
 
 The script generates a `users.json` file containing:
-- List of users (limited to 10 items)
+- List of users (limited to 10 items(but only 9 are coming as there are only 9 on the dashboard))
 - Current user information
 
 ## 🎥 Demo Video
@@ -49,7 +49,3 @@ The script generates a `users.json` file containing:
 ## ⏱️ Time Spent
 
 [To be filled]
-
-## 🔒 Security Note
-
-This script is for educational purposes only. Always ensure you have proper authorization before reverse engineering any web application. 
