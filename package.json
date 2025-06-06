@@ -1,0 +1,29 @@
+{
+  "name": "trial_assign",
+  "version": "1.0.0",
+  "description": "A TypeScript-based Node.js script to reverse engineer a legacy web application",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "npm run build && node dist/index.js",
+    "build": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@types/cheerio": "^1.0.0",
+    "@types/node": "^20.11.24",
+    "axios": "^1.6.7",
+    "axios-cookiejar-support": "^4.0.7",
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.4.5",
+    "tough-cookie": "^4.1.4",
+    "typescript": "^5.3.3"
+  },
+  "devDependencies": {
+    "@types/tough-cookie": "^4.0.5",
+    "ts-node": "^10.9.2"
+  }
+}
