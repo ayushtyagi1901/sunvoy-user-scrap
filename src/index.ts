@@ -3,6 +3,7 @@ import { CookieJar } from 'tough-cookie';
 import { wrapper } from 'axios-cookiejar-support';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as cheerio from 'cheerio';
 import * as dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
@@ -23,6 +24,21 @@ interface User {
   status: string;
 }
 
+interface CurrentUser {
+  id: string;
+  accessToken: string;
+  openId: string;
+  userId: string;
+  apiUser: string;
+  operateId: string;
+  language: string;
+}
+
+interface ApiResponse {
+  users: User[];
+  currentUser: CurrentUser;
+}
+
 // Constants
 const BASE_URL = 'https://challenge.sunvoy.com';
 const CREDENTIALS = {
@@ -31,7 +47,6 @@ const CREDENTIALS = {
 };
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000; // 1 second
-const COOKIES_FILE = path.join(__dirname, '../.cookies.json');
 
 // Setup axios with cookie support
 const jar = new CookieJar();
@@ -49,7 +64,7 @@ const client = wrapper(axios.create({
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Helper function to save data to JSON file
-const saveToJson = (users: User[]): void => {
+const saveToJson = (data: ApiResponse): void => {
   try {
     const outputDir = path.join(__dirname, '../output');
     if (!fs.existsSync(outputDir)) {
@@ -57,48 +72,11 @@ const saveToJson = (users: User[]): void => {
     }
 
     const outputPath = path.join(outputDir, 'users.json');
-    fs.writeFileSync(outputPath, JSON.stringify(users, null, 2));
-    console.log(`✅ Users saved to ${outputPath}`);
+    fs.writeFileSync(outputPath, JSON.stringify(data, null, 2));
+    console.log(`✅ Data saved to ${outputPath}`);
   } catch (error) {
     console.error('❌ Error saving to JSON:', error);
     throw error;
-  }
-};
-
-// Helper function to save cookies
-const saveCookies = async (): Promise<void> => {
-  try {
-    const cookies = await jar.getCookies(BASE_URL);
-    const cookieData = cookies.map(c => ({
-      key: c.key,
-      value: c.value,
-      domain: c.domain,
-      path: c.path,
-      expires: c.expires
-    }));
-    fs.writeFileSync(COOKIES_FILE, JSON.stringify(cookieData, null, 2));
-    console.log('🍪 Cookies saved');
-  } catch (error) {
-    console.error('❌ Error saving cookies:', error);
-  }
-};
-
-// Helper function to load cookies
-const loadCookies = async (): Promise<boolean> => {
-  try {
-    if (!fs.existsSync(COOKIES_FILE)) {
-      return false;
-    }
-    const cookieData = JSON.parse(fs.readFileSync(COOKIES_FILE, 'utf-8'));
-    for (const cookie of cookieData) {
-      const cookieStr = `${cookie.key}=${cookie.value}`;
-      await jar.setCookie(cookieStr, BASE_URL);
-    }
-    console.log('🍪 Cookies loaded');
-    return true;
-  } catch (error) {
-    console.error('❌ Error loading cookies:', error);
-    return false;
   }
 };
 
@@ -132,64 +110,44 @@ function extractNonce(html: string): string | null {
 
 // Main function to handle authentication and data fetching
 async function main() {
-  let loginSuccess = false;
-
   try {
-    // Try to load saved cookies first
-    const cookiesLoaded = await loadCookies();
-    if (cookiesLoaded) {
-      try {
-        const testResponse = await client.get(`${BASE_URL}/list`);
-        if (testResponse.status === 200) {
-          loginSuccess = true;
-          console.log('✅ Reused existing session');
-        }
-      } catch (error) {
-        console.log('⚠️ Session expired, logging in again...');
-      }
+    // Get login page for nonce
+    console.log('🔑 Getting login page...');
+    const loginPageResp = await client.get(`${BASE_URL}/login`, { 
+      headers: { Accept: 'text/html' } 
+    });
+    
+    const nonce = extractNonce(loginPageResp.data);
+    if (!nonce) {
+      throw new Error('Could not find nonce on login page');
     }
 
-    if (!loginSuccess) {
-      // Get login page for nonce
-      console.log('🔑 Getting login page...');
-      const loginPageResp = await client.get(`${BASE_URL}/login`, { 
-        headers: { Accept: 'text/html' } 
+    // Login with credentials
+    console.log('🔐 Logging in...');
+    const params = new URLSearchParams();
+    params.append('username', CREDENTIALS.email);
+    params.append('password', CREDENTIALS.password);
+    params.append('nonce', nonce);
+
+    const loginResponse = await retryRequest(async () => {
+      const response = await client.post(`${BASE_URL}/login`, params.toString(), {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json, text/html, */*',
+          'Referer': `${BASE_URL}/login`,
+          'Origin': BASE_URL
+        },
+        maxRedirects: 0,
+        validateStatus: (status) => status === 302 || status === 200
       });
-      
-      const nonce = extractNonce(loginPageResp.data);
-      if (!nonce) {
-        throw new Error('Could not find nonce on login page');
+
+      if (response.status !== 302 && response.status !== 200) {
+        throw new Error('Login failed');
       }
+      return response;
+    });
 
-      // Login with credentials
-      console.log('🔐 Logging in...');
-      const params = new URLSearchParams();
-      params.append('username', CREDENTIALS.email);
-      params.append('password', CREDENTIALS.password);
-      params.append('nonce', nonce);
-
-      const loginResponse = await retryRequest(async () => {
-        const response = await client.post(`${BASE_URL}/login`, params.toString(), {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Accept': 'application/json, text/html, */*',
-            'Referer': `${BASE_URL}/login`,
-            'Origin': BASE_URL
-          },
-          maxRedirects: 0,
-          validateStatus: (status) => status === 302 || status === 200
-        });
-
-        if (response.status !== 302 && response.status !== 200) {
-          throw new Error('Login failed');
-        }
-        return response;
-      });
-
-      loginSuccess = true;
-      console.log('✅ Login successful');
-      await saveCookies();
-    }
+    console.log('✅ Login successful');
 
     // Fetch users
     console.log('👥 Fetching users...');
@@ -204,8 +162,37 @@ async function main() {
     const users = usersResponse.data.slice(0, 10);
     console.log(`✅ Fetched ${users.length} users`);
 
-    // Save users to JSON
-    saveToJson(users);
+    // Fetch current user
+    console.log('👤 Fetching current user info...');
+    const currentUserResponse = await retryRequest(async () => {
+      const response = await client.get(`${BASE_URL}/settings/tokens`);
+      if (!response.data) {
+        throw new Error('Invalid current user data format');
+      }
+      
+      // Parse the HTML to extract user data
+      const $ = cheerio.load(response.data);
+      const userData: CurrentUser = {
+        id: String($('#userId').val() || ''),
+        accessToken: String($('#access_token').val() || ''),
+        openId: String($('#openId').val() || ''),
+        userId: String($('#userId').val() || ''),
+        apiUser: String($('#apiuser').val() || ''),
+        operateId: String($('#operateId').val() || ''),
+        language: String($('#language').val() || '')
+      };
+      return { data: userData };
+    });
+
+    console.log('✅ Current user info fetched');
+
+    // Save everything to JSON
+    const data: ApiResponse = {
+      users,
+      currentUser: currentUserResponse.data
+    };
+
+    saveToJson(data);
 
   } catch (error) {
     console.error('\n❌ Error:', error instanceof Error ? error.message : 'Unknown error occurred');
